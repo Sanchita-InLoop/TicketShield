@@ -50,10 +50,14 @@ pub fn handler(
         TicketShieldError::InvalidResaleBps
     );
 
+    // ✅ Capture keys BEFORE taking the mutable borrow of event
+    let event_key = ctx.accounts.event.key();
+    let organizer_key = ctx.accounts.organizer.key();
+
     let event = &mut ctx.accounts.event;
     let bump = ctx.bumps.event;
 
-    event.organizer = ctx.accounts.organizer.key();
+    event.organizer = organizer_key;
     event.ticket_mint = ctx.accounts.ticket_mint.key();
     event.name = name;
     event.face_price = face_price;
@@ -64,8 +68,8 @@ pub fn handler(
     event.bump = bump;
 
     emit!(EventCreated {
-        event: ctx.accounts.event.key(),
-        organizer: ctx.accounts.organizer.key(),
+        event: event_key,           // ✅ use pre-captured key
+        organizer: organizer_key,   // ✅ use pre-captured key
         name: event.name.clone(),
         total_supply,
         face_price,

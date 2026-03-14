@@ -43,6 +43,11 @@ pub struct PurchaseTicket<'info> {
 }
 
 pub fn handler(ctx: Context<PurchaseTicket>) -> Result<()> {
+    // ✅ Capture key and account_info BEFORE taking the mutable borrow of event.
+    //    Both are needed later while `event` (&mut) is still in scope.
+    let event_key = ctx.accounts.event.key();
+    let event_account_info = ctx.accounts.event.to_account_info();
+
     let event = &mut ctx.accounts.event;
 
     require!(event.is_active, TicketShieldError::EventNotActive);
@@ -84,7 +89,7 @@ pub fn handler(ctx: Context<PurchaseTicket>) -> Result<()> {
             MintTo {
                 mint: ctx.accounts.ticket_mint.to_account_info(),
                 to: ctx.accounts.buyer_ticket_account.to_account_info(),
-                authority: ctx.accounts.event.to_account_info(),
+                authority: event_account_info, // ✅ use pre-captured AccountInfo
             },
             &[seeds],
         ),
@@ -97,11 +102,10 @@ pub fn handler(ctx: Context<PurchaseTicket>) -> Result<()> {
         .ok_or(TicketShieldError::ArithmeticOverflow)?;
 
     let ticket_number = event.tickets_sold;
-    let event_key = ctx.accounts.event.key();
     let price = event.face_price;
 
     emit!(TicketPurchased {
-        event: event_key,
+        event: event_key,   // ✅ use pre-captured key
         buyer: ctx.accounts.buyer.key(),
         price_paid: price,
         ticket_number,
