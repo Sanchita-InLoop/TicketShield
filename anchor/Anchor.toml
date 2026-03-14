@@ -1,12 +1,11 @@
 [toolchain]
-anchor_version = "0.32.0"
 
 [features]
 resolution = true
 skip-lint = false
 
 [programs.devnet]
-ticketshield = "Ft9ag3LtV2PWM5vADsyj9sEfthoWYKgwLiX3XxZtKoPX"
+ticketshield = "3CWBxYn3dm7ZTgSzu4WnhLM8CtD2SzAPoiHukhbnikT7"
 
 [registry]
 url = "https://api.apr.dev"

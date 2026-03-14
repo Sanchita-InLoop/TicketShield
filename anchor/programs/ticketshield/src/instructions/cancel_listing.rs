@@ -1,52 +1,92 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Token, TokenAccount, Transfer};
-use crate::state::{Event, Listing};
+use anchor_spl::token::{self, CloseAccount, Token, TokenAccount, Transfer};
+use crate::state::Listing;
 use crate::errors::TicketShieldError;
-
-// =============================================================================
-// PERSON B — implement this file
-//
-// What this instruction must do:
-//   1. Validate seller.key() == listing.seller
-//   2. Validate listing.is_active == true
-//   3. Transfer ticket token: escrow -> seller wallet
-//   4. Set listing.is_active = false
-//   5. Emit ListingCancelled event
-// =============================================================================
 
 #[derive(Accounts)]
 pub struct CancelListing<'info> {
     #[account(
-        seeds = [b"event", event.organizer.as_ref(), event.name.as_bytes()],
-        bump = event.bump,
+        mut,
+        constraint = seller.key() == listing.seller @ TicketShieldError::UnauthorizedCancellation
     )]
-    pub event: Account<'info, Event>,
+    pub seller: Signer<'info>,
 
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [b"listing", listing.ticket_mint.as_ref(), seller.key().as_ref()],
+        bump = listing.bump,
+        constraint = listing.is_active @ TicketShieldError::ListingNotActive,
+        close = seller,
+    )]
     pub listing: Account<'info, Listing>,
 
-    #[account(mut)]
+    #[account(
+        mut,
+        constraint = escrow_token_account.key() == listing.escrow_token_account,
+    )]
     pub escrow_token_account: Account<'info, TokenAccount>,
 
-    #[account(mut)]
+    #[account(
+        mut,
+        constraint = seller_ticket_account.owner == seller.key(),
+        constraint = seller_ticket_account.mint == listing.ticket_mint,
+    )]
     pub seller_ticket_account: Account<'info, TokenAccount>,
-
-    #[account(mut)]
-    pub seller: Signer<'info>,
 
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
 
 pub fn handler(ctx: Context<CancelListing>) -> Result<()> {
-    // TODO Person B: implement cancellation logic
-    let _ = ctx;
-    err!(TicketShieldError::UnauthorizedCancellation)
+    let ticket_mint_key = ctx.accounts.listing.ticket_mint;
+    let seller_key = ctx.accounts.listing.seller;
+    let bump = ctx.accounts.listing.bump;
+
+    let seeds: &[&[u8]] = &[
+        b"listing",
+        ticket_mint_key.as_ref(),
+        seller_key.as_ref(),
+        &[bump],
+    ];
+    let signer_seeds = &[seeds];
+
+    // Return ticket from escrow back to seller
+    token::transfer(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            Transfer {
+                from: ctx.accounts.escrow_token_account.to_account_info(),
+                to: ctx.accounts.seller_ticket_account.to_account_info(),
+                authority: ctx.accounts.listing.to_account_info(),
+            },
+            signer_seeds,
+        ),
+        1,
+    )?;
+
+    // Close escrow account and return rent to seller
+    token::close_account(CpiContext::new_with_signer(
+        ctx.accounts.token_program.to_account_info(),
+        CloseAccount {
+            account: ctx.accounts.escrow_token_account.to_account_info(),
+            destination: ctx.accounts.seller.to_account_info(),
+            authority: ctx.accounts.listing.to_account_info(),
+        },
+        signer_seeds,
+    ))?;
+
+    emit!(ListingCancelled {
+        listing: ctx.accounts.listing.key(),
+        seller: ctx.accounts.seller.key(),
+    });
+
+    msg!("Listing cancelled by {}", ctx.accounts.seller.key());
+
+    Ok(())
 }
 
 #[event]
 pub struct ListingCancelled {
     pub listing: Pubkey,
-    pub event: Pubkey,
     pub seller: Pubkey,
 }
