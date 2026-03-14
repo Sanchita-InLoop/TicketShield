@@ -1,77 +1,146 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer};
+use anchor_spl::associated_token::AssociatedToken;
 use crate::state::{Event, Listing};
 use crate::errors::TicketShieldError;
 
-// =============================================================================
-// PERSON B — implement this file
-// THIS IS THE MOST IMPORTANT FUNCTION IN THE ENTIRE PROJECT.
-//
-// What this instruction must do:
-//   1. Load listing.asking_price
-//   2. Load event.face_price and event.max_resale_bps
-//   3. Compute max_allowed = face_price * max_resale_bps / 10000
-//   4. THE ENFORCEMENT CHECK (must be first):
-//        require!(
-//            listing.asking_price <= max_allowed,
-//            TicketShieldError::ResalePriceTooHigh
-//        );
-//   5. Validate buyer != seller
-//   6. Transfer SOL: buyer -> seller
-//   7. Transfer ticket token: escrow -> buyer (listing PDA signs as authority)
-//   8. Set listing.is_active = false
-//   9. Emit TicketResold event
-// =============================================================================
-
 #[derive(Accounts)]
 pub struct BuyListedTicket<'info> {
+    #[account(mut)]
+    pub buyer: Signer<'info>,
+    /// CHECK: verified via listing.seller
+    #[account(
+        mut,
+        constraint = seller.key() == listing.seller @ TicketShieldError::UnauthorizedCancellation
+    )]
+    pub seller: UncheckedAccount<'info>,
     #[account(
         seeds = [b"event", event.organizer.as_ref(), event.name.as_bytes()],
         bump = event.bump,
     )]
     pub event: Account<'info, Event>,
-
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [b"listing", listing.ticket_mint.as_ref(), listing.seller.as_ref()],
+        bump = listing.bump,
+        constraint = listing.is_active @ TicketShieldError::ListingNotActive,
+        constraint = listing.event == event.key(),
+    )]
     pub listing: Account<'info, Listing>,
-
-    #[account(mut)]
+    #[account(
+        mut,
+        constraint = escrow_token_account.key() == listing.escrow_token_account,
+    )]
     pub escrow_token_account: Account<'info, TokenAccount>,
-
-    #[account(mut)]
+    #[account(
+        init_if_needed,
+        payer = buyer,
+        associated_token::mint = ticket_mint,
+        associated_token::authority = buyer,
+    )]
     pub buyer_ticket_account: Account<'info, TokenAccount>,
-
-    /// CHECK: verified as listing.seller in handler
-    #[account(mut)]
-    pub seller: AccountInfo<'info>,
-
-    #[account(mut)]
-    pub buyer: Signer<'info>,
-
+    /// CHECK: verified via listing.ticket_mint
+    #[account(constraint = ticket_mint.key() == listing.ticket_mint)]
+    pub ticket_mint: UncheckedAccount<'info>,
     pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 pub fn handler(ctx: Context<BuyListedTicket>) -> Result<()> {
-    // TODO Person B: THE require!() CHECK MUST BE THE VERY FIRST THING HERE
-    let _ = ctx;
-    err!(TicketShieldError::EventNotActive)
+    let ticket_mint_key = ctx.accounts.listing.ticket_mint;
+    let seller_key = ctx.accounts.listing.seller;
+    let bump = ctx.accounts.listing.bump;
+    let asking_price = ctx.accounts.listing.asking_price;
+
+    require!(
+        ctx.accounts.buyer.key() != seller_key,
+        TicketShieldError::CannotBuyOwnListing
+    );
+
+    // THE KEY LINE — makes scalping impossible
+    let max_price = ctx.accounts.event
+        .max_resale_price()
+        .ok_or(TicketShieldError::ArithmeticOverflow)?;
+
+    require!(asking_price <= max_price, TicketShieldError::ResalePriceTooHigh);
+
+    system_program::transfer(
+        CpiContext::new(
+            ctx.accounts.system_program.to_account_info(),
+            system_program::Transfer {
+                from: ctx.accounts.buyer.to_account_info(),
+                to: ctx.accounts.seller.to_account_info(),
+            },
+        ),
+        asking_price,
+    )?;
+
+    let seeds: &[&[u8]] = &[
+        b"listing",
+        ticket_mint_key.as_ref(),
+        seller_key.as_ref(),
+        &[bump],
+    ];
+    let signer_seeds = &[seeds];
+
+    token::transfer(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            Transfer {
+                from: ctx.accounts.escrow_token_account.to_account_info(),
+                to: ctx.accounts.buyer_ticket_account.to_account_info(),
+                authority: ctx.accounts.listing.to_account_info(),
+            },
+            signer_seeds,
+        ),
+        1,
+    )?;
+
+    let listing = &mut ctx.accounts.listing;
+    listing.is_active = false;
+
+    emit!(TicketResold {
+        listing: ctx.accounts.listing.key(),
+        buyer: ctx.accounts.buyer.key(),
+        seller: seller_key,
+        event: ctx.accounts.event.key(),
+        price_paid: asking_price,
+    });
+
+    msg!("Ticket resold: {} bought from {} for {} lamports",
+        ctx.accounts.buyer.key(), seller_key, asking_price);
+
+    Ok(())
 }
 
 #[event]
 pub struct TicketResold {
     pub listing: Pubkey,
-    pub event: Pubkey,
-    pub seller: Pubkey,
     pub buyer: Pubkey,
-    pub resale_price: u64,
-    pub face_price: u64,
-}
-
-#[event]
-pub struct ResaleRejected {
-    pub listing: Pubkey,
+    pub seller: Pubkey,
     pub event: Pubkey,
-    pub attempted_price: u64,
-    pub max_allowed_price: u64,
+    pub price_paid: u64,
 }
+```
+
+Scroll down → click **"Commit changes"** → **"Commit directly to main"** → **"Commit changes"**.
+
+---
+
+**Step 2 — Do the same for `list_ticket.rs`**
+
+Go to:
+```
+https://github.com/Sanchita-InLoop/TicketShield/blob/main/anchor/programs/ticketshield/src/instructions/list_ticket.rs
+```
+
+Check if it already has your real code — look for `token::transfer` and `max_resale_price`. If yes, skip this file. If it still shows the stub, edit and paste the same code from before.
+
+---
+
+**Step 3 — Do the same for `cancel_listing.rs`**
+```
+https://github.com/Sanchita-InLoop/TicketShield/blob/main/anchor/programs/ticketshield/src/instructions/cancel_listing.rs
